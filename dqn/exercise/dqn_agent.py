@@ -1,6 +1,8 @@
 import numpy as np
 import random
 from collections import namedtuple, deque
+from numpy.random import choice
+from scipy.stats import rankdata
 
 from model import QNetwork
 
@@ -14,13 +16,14 @@ GAMMA = 0.99            # discount factor
 TAU = 1e-3              # for soft update of target parameters
 LR = 5e-4               # learning rate 
 UPDATE_EVERY = 4        # how often to update the network
+MAX_TD_DIFF = 1000      # TD diff for new experience, supposed to be very large
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Agent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, state_size, action_size, seed):
+    def __init__(self, state_size, action_size, seed, ddqn, sampling_mode):
         """Initialize an Agent object.
         
         Params
@@ -28,10 +31,14 @@ class Agent():
             state_size (int): dimension of each state
             action_size (int): dimension of each action
             seed (int): random seed
+            ddqn (int): True to use Double DQN; False to use standard (single) DQN
+            sampling_mode (string): "Uniform" to sample experience uniformly; "Ranked" to use ranked replay and importance sampling
         """
-        self.state_size = state_size
+        self.state_size  = state_size
         self.action_size = action_size
         self.seed = random.seed(seed)
+        self.ddqn = ddqn
+        self.sampling_mode = sampling_mode
 
         # Q-Network
         self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)
@@ -39,7 +46,7 @@ class Agent():
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
 
         # Replay memory
-        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed)
+        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed, sampling_mode)
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
     
@@ -88,18 +95,48 @@ class Agent():
         ## TODO: compute and minimize the loss
         "*** YOUR CODE HERE ***"
         
-        # Get max predicted Q values (for next states) from target model
-        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+        if self.ddqn:
+            """ Double DQN
+                Use the local network to drive the best next action,
+                but use the target network to look up the Q value.
+                
+                Paper here: https://arxiv.org/abs/1509.06461
+            """
+            # get next action using the local network
+            next_actions = self.qnetwork_local(next_states).detach().max(1).indices.unsqueeze(1)
+            # look up the next Q value using the target Q network
+            Q_targets_next = self.qnetwork_target(next_states).detach().gather(1,next_actions)
+        else:    
+            # Get max predicted Q values (for next states) from target model
+            Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)           
+            
         # Compute Q targets for current states 
         Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
-        
         # Get expected Q values from local model
         Q_expected = self.qnetwork_local(states).gather(1, actions)
 
-        loss = F.mse_loss(Q_expected, Q_targets)
-        self.optimizer.zero_grad()        
-        loss.backward()
-        self.optimizer.step()
+        if self.sampling_mode == "Uniform":
+            loss = F.mse_loss(Q_expected, Q_targets)
+            self.optimizer.zero_grad()        
+            loss.backward()
+            self.optimizer.step()
+        elif self.sampling_mode == "Ranked":
+            # TO DO: add a beta schedule here! it should be increasing from initial value to 1
+            beta = 0.5
+            IS_weights = self.memory.get_importance_sampling_weights(beta)
+            # scale the loss to compensate for importance sampling            
+            TD_diff = Q_expected - Q_targets
+            weighted_loss = torch.mean(IS_weights * IS_weights * TD_diff * TD_diff)
+            #weighted_loss = F.mse_loss( Q_expected, Q_targets )
+            self.optimizer.zero_grad()        
+            weighted_loss.backward()
+            self.optimizer.step()
+            
+            # update TD diff loss for the next sampling
+            # do we need to take a square root here? For ranked sampling probably doesn't make a difference
+            loss = F.mse_loss(Q_expected, Q_targets)
+            # TO DO: do I need to convert pytorch tensor back to list or numpy array?
+            self.memory.update_TD_diff(TD_diff.cpu().detach().numpy())
         
         # ------------------- update target network ------------------- #
         self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)                     
@@ -125,7 +162,7 @@ class Agent():
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, action_size, buffer_size, batch_size, seed):
+    def __init__(self, action_size, buffer_size, batch_size, seed, sampling_mode):
         """Initialize a ReplayBuffer object.
 
         Params
@@ -134,29 +171,79 @@ class ReplayBuffer:
             buffer_size (int): maximum size of buffer
             batch_size (int): size of each training batch
             seed (int): random seed
+            sampling_mode (string): "Uniform" to sample experience uniformly; "Ranked" to use ranked replay and importance sampling
         """
         self.action_size = action_size
+        self.buffer_size = buffer_size
         self.memory = deque(maxlen=buffer_size)  
         self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done", "TD_diff"])
         self.seed = random.seed(seed)
+        
+        self.sampling_mode = sampling_mode
+        self.choices       = []
+        self.probs         = []
     
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
-        e = self.experience(state, action, reward, next_state, done)
+        # initialize experience with MAX_TD_DIFF
+        e = self.experience(state, action, reward, next_state, done, MAX_TD_DIFF)
         self.memory.append(e)
     
-    def sample(self):
+    def sample_uniform(self):
         """Randomly sample a batch of experiences from memory."""
         experiences = random.sample(self.memory, k=self.batch_size)
-
-        states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
+            
+        states  = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
         actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(device)
         rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
         next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
-        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
+        dones   = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
   
         return (states, actions, rewards, next_states, dones)
+  
+    def sample_ranked(self):
+        """Ranked sampling a batch of experiences from memory"""
+        # rankdata ranks in ascending order, that's why we multiply by -1 here to get descending ranking
+        # TO DO: check if this ranking logic works
+        # TO DO: check the None cases does it actually work?
+        # remove None, only happens at initial phase
+        
+        memory    = [e for e in self.memory if e is not None]
+        ranks     = rankdata([-e.TD_diff for e in self.memory if e is not None])
+        all_probs = [1./k for k in ranks]
+        all_probs = all_probs / np.sum(all_probs)
+        choices   = choice(len(memory), self.batch_size, p=all_probs, replace=False)
+        experiences = [memory[k] for k in choices]
+            
+        states = torch.from_numpy(np.vstack([e.state for e in experiences])).float().to(device)
+        actions = torch.from_numpy(np.vstack([e.action for e in experiences])).long().to(device)
+        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences])).float().to(device)
+        next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences])).float().to(device)
+        dones = torch.from_numpy(np.vstack([e.done for e in experiences]).astype(np.uint8)).float().to(device)
+        
+        self.choices = choices
+        self.probs   = [all_probs[k] for k in choices]
+                                 
+        return (states, actions, rewards, next_states, dones)
+                                        
+    def update_TD_diff(self, diffs):             
+        for i, choice in enumerate(self.choices):
+            exp = self.memory[choice]
+            self.memory[choice] = self.experience(exp[0], exp[1], exp[2], exp[3], exp[4], abs(diffs[i]))
+        
+    def get_importance_sampling_weights(self, beta):
+        weights = [pow( p * self.buffer_size, -beta) for p in self.probs]
+        weights = weights / np.max(weights)
+        print(weights)
+        return torch.Tensor(weights).float().to(device)
+    
+    def sample(self):
+        """Randomly sample a batch of experiences from memory."""
+        if self.sampling_mode == "Uniform":
+            return self.sample_uniform()
+        elif self.sampling_mode == "Ranked":
+            return self.sample_ranked()
 
     def __len__(self):
         """Return the current size of internal memory."""
