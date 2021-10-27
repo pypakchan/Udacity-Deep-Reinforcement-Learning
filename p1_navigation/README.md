@@ -57,6 +57,12 @@ Run the notebook `Navigation.ipynb` to get started with training the own agent.
   
 * I tried different combinations of training methods, ie, with and with out DDQN and Dueling respectively. This gives me 4 combinations. I ran these 4 models 10x each and plot out the resulting scores. To my surprise there is no observable pick up in the training speed across these few methodologies. it's possible that the network I used is too simple to observe material differences.
 
+### Evaluation of different training approaches
+
+We plot out the training scores across different training approaches below (averaged over 10 trainings with different initial seed). We do not notice any significant differenes across methodogies, and they can all solve the problem (score = 13) at around 500 episodes.
+
+<img src="./training_score.png" alt="Training Scores" style="height: 200px; width:300px;"/>
+
 ### Further Enhancements
 
 We can try a few things to further improve the agent:
