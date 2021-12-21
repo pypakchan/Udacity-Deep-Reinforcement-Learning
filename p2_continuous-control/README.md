@@ -104,7 +104,7 @@ Then, place the file in the `p2_continuous-control/` folder in the DRLND GitHub 
 * To further stablizes the training, we have also introduced target actor and critic networks, which are moving slower than the corresponding local networks. The local networks are responsible for making the actual action recommendations, but the target networks are used for backpop-ing the network. This bifurcation stablizes the training process as we won't be chasing a fast moving target. The target network is soft updated by a moving avg of the local parameters. This is basically the same idea as the [Double DQN](https://arxiv.org/abs/1509.06461) network.
 
 ### Training Results
-Below graph shows that the model has successfully met the benchmark of having 30 points or higher for 30 consecutive episodes at around 600 episodes. Further training does not really improve the results significantly and from the graph below we can see the the training itself is a little bit unstable.
+Below graph shows that the model has successfully met the benchmark of having 30 points or higher for 100 consecutive episodes at around 600 episodes. Further training does not really improve the results significantly and from the graph below we can see the the training itself is a little bit unstable.
 
 <img src="./training_score.png" alt="Training Scores" style="height: 200px; width:300px;"/>
 
