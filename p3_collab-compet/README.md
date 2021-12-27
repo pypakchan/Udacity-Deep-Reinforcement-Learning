@@ -99,7 +99,7 @@ This approach is expected to perform poorly but it is still very interesting to 
 
 * For this particular problem, given the two agents are basically doing the same task and trying to pick up the same skillset. We actually can use only one DDPG model to act for both agents. This remove the constraint on the weaker agent, and also remove the possiblility of one agent exploting the other. Anyhow, we should still expect the agent to sometimes get trapped in a local region and cannot improve its score further.
 
-<img src="./approach1_score.png" alt="Training Scores" style="height: 200px; width:300px;"/>
+<img src="./approach1_scores.png" alt="Training Scores" style="height: 200px; width:300px;"/>
 
 ### Approach 2: One Single DDPG Agent for Both Agents
 
@@ -109,7 +109,7 @@ This approach is expected to perform poorly but it is still very interesting to 
 
 * This is by no mean a good performance. There are [models](https://github.com/silviomori/udacity-deep-reinforcement-learning-p3-collab-compet/blob/master/Tennis.ipynb) that solve the problem within 1000 episodes. But even after studying their parameters qutie a bit, I couldn't really figure out conceptually what is driving the performance difference.
 
-<img src="./approach2_score.png" alt="Training Scores" style="height: 200px; width:300px;"/>
+<img src="./approach2_scores.png" alt="Training Scores" style="height: 200px; width:300px;"/>
 
 ### Challenges
 
